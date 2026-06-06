@@ -3,41 +3,130 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from datetime import datetime
 
-# Session Management
+# --- Global styling ---
+st.set_page_config(page_title="SkyCast Enterprise | Weather Intelligence", layout="wide")
 
-def buildSession(retries=3, backoff=0.5):
+# Custom Dark Theme Stylesheet
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap');
+    
+    /* Global Overrides */
+    .stApp {
+        background-color: #0c0f16;
+        color: #f3f4f6;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    
+    /* Headers & Subheaders */
+    h1, h2, h3 {
+        color: #00d4ff !important;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-weight: 700 !important;
+        letter-spacing: -0.02em;
+    }
+    
+    /* Glassmorphic Metric Cards */
+    .metric-card {
+        background: linear-gradient(135deg, #161b25 0%, #11141d 100%);
+        border: 1px solid #1f293d;
+        border-radius: 16px;
+        padding: 24px;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .metric-card:hover {
+        transform: translateY(-4px);
+        border-color: #00d4ff;
+    }
+    .metric-title {
+        color: #9ca3af;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 8px;
+        font-weight: 600;
+    }
+    .metric-value {
+        color: #ffffff;
+        font-size: 32px;
+        font-weight: 700;
+    }
+    .metric-unit {
+        color: #00d4ff;
+        font-size: 18px;
+    }
+    
+    /* Stylized Custom Text Input Container to replace broken markdown divs */
+    div[data-testid="stTextInput"] {
+        background-color: #161b25;
+        border: 1px solid #1f293d;
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    }
+    
+    /* Custom divider line */
+    .cyan-divider {
+        height: 2px;
+        background: linear-gradient(90deg, transparent, #00d4ff, transparent);
+        margin: 30px 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# --- Session management ---
+def buildSession():
     s = requests.Session()
     retry = Retry(
-        total=retries,
-        connect=retries,
-        read=retries,
-        status=retries,
-        backoff_factor=backoff,
+        total=3,
+        connect=3,
+        read=3,
+        status=3,
+        backoff_factor=0.5,
         status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset(['GET']),
+        allowed_methods=frozenset(['GET'])
     )
     s.mount('https://', HTTPAdapter(max_retries=retry))
     return s
 
-def getCitySuggestions(session, query: str, limit=10):
-    if len(query) < 2: 
+# --- Explicit error-guarded API wrappers ---
+def get_city_suggestions(session, query):
+    if not query or len(query.strip()) < 2:
         return []
-    
     url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {'name': query, 'count': limit, 'language': 'en', 'format': 'json'}
-    
+    try:
+        r = session.get(url, params={'name': query, 'count': 5}, timeout=5)
+        if r.status_code == 200:
+            return r.json().get("results", [])
+    except Exception:
+        pass # Silently drop exception to keep UI clean during fast typing
+    return []
+
+def get_weather(session, lat, lon, tz):
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "timezone": tz,
+        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
+        "hourly": "precipitation_probability,uv_index",
+        "daily": "temperature_2m_max,temperature_2m_min",
+        "forecast_days": 15  
+    }
     try:
         r = session.get(url, params=params, timeout=5)
-        r.raise_for_status()
-        results = r.json().get("results", [])
-        return results
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Weather server responded with status code: {r.status_code}. Detail: {r.text}")
     except Exception as e:
-        st.sidebar.error(f"Search Error: {e}")
-        return []
-
-
-# Mapping the weather
+        st.error(f"Connection error while fetching forecast: {e}")
+    return None
 
 def wmo_code_to_text(code: int) -> str:
     mapping = {
@@ -66,102 +155,147 @@ def wmo_code_to_text(code: int) -> str:
         96: "Thunderstorm with slight hail ⛈️",
         99: "Thunderstorm with heavy hail ⛈️",
     }
-    return mapping.get(code, f"Unknown Condition (Code {code})")
+    return mapping.get(code, ("Atmospheric changes", "🌡️"))
 
-# Data Fetching
+# --- Streamlit reactve application entry ---
+session = buildSession()
 
-def geoCodeCity(session, city: str, timeout=5):
-    url = "https://geocoding-api.open-meteo.com/v1/search"
-    params = {'name': city, 'count': 1, 'language': 'en', 'format': 'json'}
-    try:
-        r = session.get(url, params=params, timeout=timeout)
-        r.raise_for_status() # Trigger except block if HTTP error
-        data = r.json()
-        results = data.get("results", [])
-        if not results:
-            return None
-        top = results[0]
-        return {
-            "name": top.get("name", city),
-            "country": top.get("country", ""),
-            "lat": top.get("latitude"),
-            "lon": top.get("longitude"),
-            "timezone": top.get("timezone", "UTC"),
-        }
-    except requests.exceptions.Timeout:
-        st.error("⏳ Geocoding timeout. The server took too long to respond.")
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Network error in geocoding: {e}")
-    return None
+# Page Header
+st.markdown("<h1 style='text-align: center; margin-top: 20px;'>SKYCAST ENTERPRISE</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #9ca3af; font-size: 1.1rem; margin-bottom: 30px;'>Continuous global meteorological monitoring platform</p>", unsafe_allow_html=True)
 
-def getWeather(session, lat, lon, days=7, timezone="auto", timeout=5):
-    url = "https://api.open-meteo.com/v1/forecast"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
-        "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
-        "timezone": timezone,
-        "forecast_days": days
-    }
-    try:
-        r = session.get(url, params=params, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except requests.exceptions.Timeout:
-        st.error("⏳ Weather API timeout. Try again.")
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Network error in weather fetch: {e}")
-    return None
+col_left, col_mid, col_right = st.columns([1, 2, 1])
+selected_city_data = None
 
+with col_mid:
+    query = st.text_input("🔍 Start typing city name...", placeholder="Type at least 2 characters (e.g. Guwahati, Tokyo)...")
+    
+    if query:
+        suggestions = get_city_suggestions(session, query)
+        if suggestions:
+            option_map = {f"{res['name']}, {res.get('admin1', '')} ({res.get('country_code', '')})": res for res in suggestions}
+            choice = st.selectbox(
+                "✨ Select matched location below:", 
+                options=list(option_map.keys()),
+                index=None,
+                placeholder="Click here to inspect matching locations..."
+            )
+            if choice:
+                selected_city_data = option_map[choice]
+        else:
+            st.warning("No global matches found. Verify spelling.")
 
-st.set_page_config(page_title="Pro Weather Dashboard", layout="wide")
-st.title("🌊 Advanced Weather Analytics")
+st.markdown("<div class='cyan-divider'></div>", unsafe_allow_html=True)
 
-st.sidebar.header("User Requirements")
-city_input = st.sidebar.text_input("Enter City", "IIT Mandi")
-duration = st.sidebar.selectbox("Select Forecast Period", ["1 Week", "2 Weeks"])
-chart_type = st.sidebar.radio("Visualization Style", ["Line Graph", "Bar Chart"])
-
-days_map = {"1 Week": 7, "2 Weeks": 14}
-selected_days = days_map[duration]
-
-if city_input:
-    session = buildSession()
-    city_info = geoCodeCity(session, city_input)
-
-    if city_info:
-        weather_data = getWeather(session, city_info["lat"], city_info["lon"], days=selected_days, timezone=city_info["timezone"])
+# --- Data rendering and visualization ---
+if selected_city_data:
+    with st.spinner("Synchronizing real-time telemetry datasets..."):
+        weather = get_weather(
+            session, 
+            selected_city_data['latitude'], 
+            selected_city_data['longitude'], 
+            selected_city_data.get('timezone') or 'UTC'
+        )
         
-        if weather_data:
-            cur = weather_data["current"]
-            st.subheader(f"📍 {city_info['name']}, {city_info['country']}")
+    if weather and 'current' in weather:
+        cur = weather['current']
+        daily = weather['daily']
+        hourly = weather['hourly']
+        
+        # Local time computation (api returns timezone-specific timestamp in 'time')
+        api_time = datetime.fromisoformat(cur['time'])
+        formatted_time = api_time.strftime("%A, %b %d | %I:%M %p")
+        
+        weather_desc, weather_emoji = wmo_to_text(cur['weather_code'])
+        
+        # Upper Layout Display containing Location details and observation timestamps
+        col_title, col_time = st.columns([2, 1])
+        with col_title:
+            st.markdown(f"<h2>📍 {selected_city_data['name']}, {selected_city_data.get('country', '')}</h2>", unsafe_allow_html=True)
+        with col_time:
+            st.markdown(f"<p style='text-align: right; font-size: 1.1rem; color: #9ca3af; margin-top: 10px;'>⏱️ <b>Local Time:</b> {formatted_time}</p>", unsafe_allow_html=True)
             
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Temperature", f"{cur['temperature_2m']}°C")
-            m2.metric("Feels Like", f"{cur['apparent_temperature']}°C")
-            m3.metric("Humidity", f"{cur['relative_humidity_2m']}%")
-            m4.metric("Wind Speed", f"{cur['wind_speed_10m']} km/h")
+        st.markdown("<br>", unsafe_allow_html=True)
+        m1, m2, m3, m4 = st.columns(4)
+        
+        with m1:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Air Temperature</div>
+                    <div class="metric-value">{cur['temperature_2m']}<span class="metric-unit">°C</span></div>
+                    <div style="color: #9ca3af; margin-top: 8px; font-size: 14px;">{weather_emoji} {weather_desc}</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with m2:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Thermal Index</div>
+                    <div class="metric-value">{cur['apparent_temperature']}<span class="metric-unit">°C</span></div>
+                    <div style="color: #9ca3af; margin-top: 8px; font-size: 14px;">"Feels Like" Temperature</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with m3:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Relative Humidity</div>
+                    <div class="metric-value">{cur['relative_humidity_2m']}<span class="metric-unit">%</span></div>
+                    <div style="color: #9ca3af; margin-top: 8px; font-size: 14px;">Water vapor pressure</div>
+                </div>
+            """, unsafe_allow_html=True)
+        with m4:
+            st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Wind Velocity</div>
+                    <div class="metric-value">{cur['wind_speed_10m']}<span class="metric-unit">km/h</span></div>
+                    <div style="color: #9ca3af; margin-top: 8px; font-size: 14px;">Velocity at 10m altitude</div>
+                </div>
+            """, unsafe_allow_html=True)
             
-            st.write(f"**Current Condition:** {wmo_code_to_text(cur['weather_code'])}")
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Interactive Graphic Analytics Section
+        st.markdown("<h3>📊 Visual Analytics & Forecast Models</h3>", unsafe_allow_html=True)
+        tab1, tab2, tab3 = st.tabs(["📅 15-Day Temp Outlook", "🌧️ Next 24-Hour Rain Probability", "☀️ Ultraviolet Index Profile"])
+        
+        # Generation of unified forecast dataframe (Daily)
+        df_daily = pd.DataFrame({
+            "Date": pd.to_datetime(daily['time']),
+            "Max Temp (°C)": daily['temperature_2m_max'],
+            "Min Temp (°C)": daily['temperature_2m_min']
+        }).set_index("Date")
+        
+        # Generation of short-term dataframe (Hourly) - sliced to the first 24 hours safely
+        df_hourly = pd.DataFrame({
+            "Time": pd.to_datetime(hourly['time'][:24]),
+            "Precipitation Probability (%)": hourly['precipitation_probability'][:24],
+            "UV Index": hourly['uv_index'][:24]
+        }).set_index("Time")
+        
+        with tab1:
+            st.markdown("<p style='color:#9ca3af; margin-bottom:20px;'>Daily extremes progression tracking across the upcoming 15-day meteorological period.</p>", unsafe_allow_html=True)
+            # Added axis labels explicitly
+            st.line_chart(df_daily, color=["#00d4ff", "#ff4b4b"], x_label="Forecast Date", y_label="Temperature (°C)")
             
-            st.divider()
-
-            st.header(f"📊 Historical & Forecast Trends ({duration})")
+        with tab2:
+            st.markdown("<p style='color:#9ca3af; margin-bottom:20px;'>Real-time dynamic tracking of upcoming precipitation events across the next 24 hours.</p>", unsafe_allow_html=True)
+            # Added axis labels explicitly
+            st.area_chart(df_hourly["Precipitation Probability (%)"], color="#00d4ff", x_label="Hour (Next 24 hrs)", y_label="Rain Probability (%)")
             
-            df = pd.DataFrame({
-                "Date": pd.to_datetime(weather_data["daily"]["time"]),
-                "Max Temp (°C)": weather_data["daily"]["temperature_2m_max"],
-                "Min Temp (°C)": weather_data["daily"]["temperature_2m_min"],
-                "Precipitation (mm)": weather_data["daily"]["precipitation_sum"]
-            })
-            df.set_index("Date", inplace=True)
-
-            if chart_type == "Line Graph":
-                st.line_chart(df[["Max Temp (°C)", "Min Temp (°C)"]])
-            else:
-                st.bar_chart(df[["Max Temp (°C)", "Min Temp (°C)"]])
-            with st.expander("View Raw Data Table"):
-                st.dataframe(df)
+        with tab3:
+            st.markdown("<p style='color:#9ca3af; margin-bottom:20px;'>Projected solar Ultraviolet Radiation tracking index for outer activity scheduling safety.</p>", unsafe_allow_html=True)
+            # Added axis labels explicitly
+            st.bar_chart(df_hourly["UV Index"], color="#ffcc00", x_label="Hour (Next 24 hrs)", y_label="UV Radiation Index")
+            
     else:
-        st.warning("Could not find that city. Please refine your search.")
+        st.error("Failed to parse weather telemetry data. Please select another city or try again later.")
+else:
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""
+        <div style="text-align: center; color: #4b5563;">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color: #1f293d; margin-bottom: 16px;">
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+            </svg>
+            <h3 style="color: #4b5563 !important; font-weight: 400 !important;">Awaiting system initialization parameters...</h3>
+            <p>Please enter a geographic location above to synchronize satellite telemetry pipelines.</p>
+        </div>
+    """, unsafe_allow_html=True)
