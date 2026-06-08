@@ -206,7 +206,7 @@ if selected_city_data:
         api_time = datetime.fromisoformat(cur['time'])
         formatted_time = api_time.strftime("%A, %b %d | %I:%M %p")
         
-        weather_desc, weather_emoji = wmo_to_text(cur['weather_code'])
+        weather_desc, weather_emoji = wmo_code_to_text(cur['weather_code'])
         
         # Upper Layout Display containing Location details and observation timestamps
         col_title, col_time = st.columns([2, 1])
