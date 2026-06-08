@@ -128,32 +128,16 @@ def get_weather(session, lat, lon, tz):
         st.error(f"Connection error while fetching forecast: {e}")
     return None
 
-def wmo_code_to_text(code: int) -> str:
+def wmo_to_text(code):
     mapping = {
-        0: "Clear sky ☀️",
-        1: "Mainly clear 🌤️",
-        2: "Partly cloudy ⛅",
-        3: "Overcast ☁️",
-        45: "Fog 🌫️",
-        48: "Depositing rime fog 🌫️",
-        51: "Light drizzle 🌧️",
-        53: "Moderate drizzle 🌧️",
-        55: "Dense drizzle 🌧️",
-        61: "Slight rain 🌦️",
-        63: "Moderate rain 🌧️",
-        65: "Heavy rain ⛈️",
-        71: "Slight snow ❄️",
-        73: "Moderate snow ❄️",
-        75: "Heavy snow ❄️",
-        77: "Snow grains ❄️",
-        80: "Slight rain showers 🌦️",
-        81: "Moderate rain showers 🌧️",
-        82: "Violent rain showers ⛈️",
-        85: "Slight snow showers 🌨️",
-        86: "Heavy snow showers 🌨️",
-        95: "Thunderstorm 🌩️",
-        96: "Thunderstorm with slight hail ⛈️",
-        99: "Thunderstorm with heavy hail ⛈️",
+        0: ("Clear sky", "☀️"),
+        1: ("Mainly clear", "🌤️"),
+        2: ("Partly cloudy", "⛅"),
+        3: ("Overcast", "☁️"),
+        45: ("Fog", "🌫️"),
+        51: ("Light drizzle", "🌧️"),
+        61: ("Rain showers", "🌦️"),
+        95: ("Thunderstorm", "🌩️")
     }
     return mapping.get(code, ("Atmospheric changes", "🌡️"))
 
@@ -206,7 +190,7 @@ if selected_city_data:
         api_time = datetime.fromisoformat(cur['time'])
         formatted_time = api_time.strftime("%A, %b %d | %I:%M %p")
         
-        weather_desc, weather_emoji = wmo_code_to_text(cur['weather_code'])
+        weather_desc, weather_emoji = wmo_to_text(cur['weather_code'])
         
         # Upper Layout Display containing Location details and observation timestamps
         col_title, col_time = st.columns([2, 1])
@@ -264,7 +248,6 @@ if selected_city_data:
             "Min Temp (°C)": daily['temperature_2m_min']
         }).set_index("Date")
         
-        # Generation of short-term dataframe (Hourly) - sliced to the first 24 hours safely
         df_hourly = pd.DataFrame({
             "Time": pd.to_datetime(hourly['time'][:24]),
             "Precipitation Probability (%)": hourly['precipitation_probability'][:24],
@@ -273,17 +256,14 @@ if selected_city_data:
         
         with tab1:
             st.markdown("<p style='color:#9ca3af; margin-bottom:20px;'>Daily extremes progression tracking across the upcoming 15-day meteorological period.</p>", unsafe_allow_html=True)
-            # Added axis labels explicitly
             st.line_chart(df_daily, color=["#00d4ff", "#ff4b4b"], x_label="Forecast Date", y_label="Temperature (°C)")
             
         with tab2:
             st.markdown("<p style='color:#9ca3af; margin-bottom:20px;'>Real-time dynamic tracking of upcoming precipitation events across the next 24 hours.</p>", unsafe_allow_html=True)
-            # Added axis labels explicitly
             st.area_chart(df_hourly["Precipitation Probability (%)"], color="#00d4ff", x_label="Hour (Next 24 hrs)", y_label="Rain Probability (%)")
             
         with tab3:
             st.markdown("<p style='color:#9ca3af; margin-bottom:20px;'>Projected solar Ultraviolet Radiation tracking index for outer activity scheduling safety.</p>", unsafe_allow_html=True)
-            # Added axis labels explicitly
             st.bar_chart(df_hourly["UV Index"], color="#ffcc00", x_label="Hour (Next 24 hrs)", y_label="UV Radiation Index")
             
     else:
